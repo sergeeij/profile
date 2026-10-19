@@ -1,0 +1,133 @@
+%% ПУНКТ 3. SFDR КОМПЛЕКСНОГО ВЫХОДА ПРИ ng = 2 ... 12
+% Важно: sfdr(real(y),fsv) определяет SFDR только I-канала.
+% Здесь сравниваем пик на +100 кГц с наиболее высоким ПОБОЧНЫМ
+% пиком двустороннего спектра I+jQ (включая зеркало на -100 кГц).
+% Используем один и тот же способ для каждой разрядности.
+
+sfdr_folder = 'Results_Variant_5_SFDR';
+if ~exist(sfdr_folder,'dir')
+    mkdir(sfdr_folder);
+end
+
+bits_range = 2:(noba+2);
+SFDR_values = NaN(size(bits_range));
+main_freq = NaN(size(bits_range));
+spur_freq = NaN(size(bits_range));
+main_dB = NaN(size(bits_range));
+spur_dB = NaN(size(bits_range));
+
+fUseful = fc-fg;                 % 100 кГц в тестовом режиме
+samplesForPlot = [2 6 12];
+
+% После децимации: 15 МГц / 100 кГц = 150 отсчетов на период.
+% Берем 1500 последних отсчетов: это ровно 10 периодов полезного
+% сигнала. Это устраняет спектральное растекание полезного тона.
+% Первые 900 отсчетов (из 2400) отбрасываются вместе с переходными
+% процессами фильтров. Если изменить длину/частоту — пересчитать.
+periodSamples = fsv / abs(fUseful);
+if abs(periodSamples - round(periodSamples)) > 1e-9
+    error('Для когерентного FFT частота сигнала должна соответствовать целому числу отсчетов на период.');
+end
+periodSamples = round(periodSamples);
+numberOfPeriods = 10;
+fftSamples = periodSamples * numberOfPeriods;
+
+for k = 1:numel(bits_range)
+    bits = bits_range(k);
+
+    [nco_test, ~] = get_nco(bits,fg,t,'fixed',0,0);
+    dem_test = get_dem(adc_signal,nco_test,noba,bits,'fixed');
+
+    % Новый CIC на каждой итерации, остальная модель без изменений
+    CIC_test = dsp.CICDecimator(R,1,N);
+    CIC_test.FixedPointDataType = 'Full precision';
+    cic_test = step(CIC_test,dem_test);
+    cic_test = double(cic_test)/double(cic_gain);
+    fir_test = filter(hFIR,1,cic_test);
+
+    yAll = double(fir_test(:));
+    if numel(yAll) < fftSamples + 200
+        error('Мало отсчетов для когерентного FFT.');
+    end
+    y = yAll(end-fftSamples+1:end);  % удаляем начальные переходные процессы
+    L = numel(y);
+    df = fsv/L;
+    f = (-floor(L/2):ceil(L/2)-1).' * df;
+
+    % Когерентное FFT с прямоугольным окном: полезный тон попадает
+    % точно в один частотный бин; боковых лепестков от окна нет.
+    Y = fftshift(fft(y));
+    P = abs(Y)/L;
+    level_dB = 20*log10(max(P,1e-15));
+
+    % Находим полезную составляющую в пределах одного бина от +100 кГц
+    mainMask = abs(f-fUseful) < 0.51*df;
+    mainIndices = find(mainMask);
+    if isempty(mainIndices)
+        error('Частота полезного сигнала не совпала с FFT-бином.');
+    end
+    [main_dB(k), idxMainLocal] = max(level_dB(mainMask));
+    mainIndex = mainIndices(idxMainLocal);
+    main_freq(k) = f(mainIndex);
+
+    % Исключаем ТОЛЬКО полезную линию, не ее зеркальную составляющую.
+    % Чтобы не выбирать шумовой отсчет между пиками, ищем локальные
+    % спектральные максимумы. При отсутствии локальных максимумов
+    % выбираем наибольший оставшийся FFT-бин.
+    spurMask = true(L,1);
+    spurMask(mainIndex) = false;
+    isPeak = false(L,1);
+    isPeak(2:end-1) = (P(2:end-1) >= P(1:end-2)) & ...
+                      (P(2:end-1) > P(3:end));
+    candidateIndices = find(isPeak & spurMask);
+    if isempty(candidateIndices)
+        candidateIndices = find(spurMask);
+    end
+    [~, pos] = max(P(candidateIndices));
+    spurIndex = candidateIndices(pos);
+    spur_dB(k) = level_dB(spurIndex);
+    spur_freq(k) = f(spurIndex);
+    SFDR_values(k) = main_dB(k) - spur_dB(k);
+
+    fprintf('ng=%2d: полезный %+9.3f кГц; побочный %+9.3f кГц; SFDR=%8.3f дБ\n', ...
+            bits,main_freq(k)/1e3,spur_freq(k)/1e3,SFDR_values(k));
+
+    if ismember(bits,samplesForPlot)
+        figSp = figure('Color','w','Position',[80 80 1200 650]);
+        plot(f/1e6,level_dB-main_dB(k),'LineWidth',1.0);
+        hold on;
+        plot(main_freq(k)/1e6,0,'go','MarkerSize',9,'LineWidth',1.5);
+        plot(spur_freq(k)/1e6,-SFDR_values(k),'ro','MarkerSize',9,'LineWidth',1.5);
+        hold off; grid on;
+        xlabel('f, МГц'); ylabel('Уровень, dBc');
+        title(sprintf('Комплексный спектр после КИХ, ng = %d бит',bits));
+        legend('Спектр','Полезный пик','Максимальный побочный пик', ...
+               'Location','southoutside','Orientation','horizontal');
+        set(gca,'FontSize',15,'FontName','Times New Roman');
+        xlim([-fsv/2 fsv/2]/1e6);
+        fileBase = fullfile(sfdr_folder,sprintf('Spectrum_ng_%02d',bits));
+        savefig(figSp,[fileBase '.fig']);
+        print(figSp,[fileBase '.tiff'],'-dtiff','-r300');
+    end
+end
+
+T = table(bits_range(:),SFDR_values(:),main_freq(:)/1e3, ...
+    spur_freq(:)/1e3,main_dB(:),spur_dB(:), ...
+    'VariableNames',{'NCO_bits','SFDR_dB','Main_kHz', ...
+                     'Spur_kHz','Main_dB','Spur_dB'});
+disp(T);
+writetable(T,fullfile(sfdr_folder,'SFDR_complex_variant5.csv'));
+
+figSFDR = figure('Color','w','Position',[80 80 1200 680]);
+plot(bits_range,SFDR_values,'-o','LineWidth',1.8,'MarkerSize',7);
+grid on;
+xticks(bits_range);
+xlabel('Разрядность цифрового гетеродина, бит');
+ylabel('SFDR комплексного выхода, дБ');
+title('Зависимость SFDR от разрядности цифрового гетеродина');
+set(gca,'FontSize',16,'FontName','Times New Roman');
+fileBase = fullfile(sfdr_folder,'SFDR_vs_NCO_bits');
+savefig(figSFDR,[fileBase '.fig']);
+print(figSFDR,[fileBase '.tiff'],'-dtiff','-r300');
+
+disp('Пункт 3: таблица и четыре графика сохранены в Results_Variant_5_SFDR');
