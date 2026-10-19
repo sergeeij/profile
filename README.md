@@ -1,9 +1,4 @@
-# Personal Student Projects
-
-> This repository is a collection of my personal projects developed throughout my studies. 
+# Мои проекты, отчёты, лабы и т.д...
 
 > [!NOTE]
-> As a student majoring in **Radio Electronic Systems and Engineering**, I am still learning! Some of the results (well, hopefully, I can manage to complete at least something!) might be sub-optimal or even flat-out wrong. Feedback and constructive suggestions are always welcome.
-## Мои проекты
-
-Изучаю Python, Linux и микроконтроллеры.
+> Тут все может быть как четко, как не так четко. Изучаю Python, Linux и микроконтроллеры. Пока что вот в моих руках есть CH32V307
